@@ -1,0 +1,4 @@
+<?php
+namespace App\Models;
+use Illuminate\Database\Eloquent\Model;
+class Expense extends Model { protected $guarded=[]; protected $casts=['date'=>'date:Y-m-d','amount'=>'float','quantity'=>'float','rate'=>'float']; protected $appends=['paid_amount','balance_amount']; public function booking(){return $this->belongsTo(Booking::class);} public function category(){return $this->belongsTo(ExpenseCategory::class,'expense_category_id');} public function supplier(){return $this->belongsTo(Supplier::class);} public function payments(){return $this->hasMany(ExpensePayment::class);} public function items(){return $this->hasMany(ExpenseItem::class);} public function getPaidAmountAttribute(){return (float)$this->payments->sum('amount');} public function getBalanceAmountAttribute(){return max(0,$this->amount-$this->paid_amount);} }
