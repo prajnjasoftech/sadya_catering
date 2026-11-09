@@ -12,6 +12,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import api from "./api";
+import { endSession, recordActivity, watchSession } from "./session";
 import PaymentHistory from "./PaymentHistory";
 import CashFlowReports from "./CashFlowReports";
 import {
@@ -86,6 +87,8 @@ function Login({ onLogin }) {
       let { data } = await api.post("/login", { email, password });
       localStorage.setItem("token", data.token);
       localStorage.setItem("user", JSON.stringify(data.user));
+      recordActivity();
+      sessionStorage.removeItem("sadya.logoutReason");
       onLogin();
     } catch {
       setError("Email or password is incorrect.");
@@ -113,6 +116,7 @@ function Login({ onLogin }) {
             Use the demo admin account to explore your workspace.
           </p>
           {error && <p className="error">{error}</p>}
+          {sessionStorage.getItem("sadya.logoutReason") && <p role="status" className="muted">{sessionStorage.getItem("sadya.logoutReason")}</p>}
           <div className="field">
             <label>Email address</label>
             <input
@@ -142,12 +146,10 @@ function Shell() {
     loc = useLocation(),
     go = useNavigate();
   let title = nav.find((x) => loc.pathname.startsWith(x[0]))?.[1] || "SadyaPro";
-  async function logout() {
-    try {
-      await api.post("/logout");
-    } catch {}
-    localStorage.clear();
-    go("/login");
+  function logout() {
+    sessionStorage.removeItem("sadya.logoutReason");
+    endSession();
+    go("/login", {replace: true});
   }
   return (
     <div className="app">
@@ -622,7 +624,7 @@ function BookingDetail() {
             <PriceRow label="Payments received" value={-Number(booking.paid_amount)} />
             <div className="price-balance"><span>Balance due</span><b>{money(booking.balance_amount)}</b></div>
           </section>
-          {booking.notes && <section className="card"><div className="card-title"><h3>Notes</h3></div><p className="muted">{booking.notes}</p></section>}
+          {booking.notes && <section className="card"><div className="card-title"><h3>Additional information</h3></div><p className="muted" style={{whiteSpace: "pre-wrap", overflowWrap: "anywhere"}}>{booking.notes}</p></section>}
         </aside>
       </div>
     </>
@@ -650,6 +652,7 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
       discount: 0,
       status: "Confirmed",
       venue: "",
+      notes: "",
     });
   useEffect(() => {
     Promise.all([api.get("/customers"), api.get("/packages")]).then(
@@ -728,6 +731,14 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
               value={f.venue}
               onChange={(e) => set("venue", e.target.value)}
               placeholder="Function venue and place"
+            />
+          </Field>
+          <Field label="Additional information" full>
+            <textarea
+              rows={3}
+              value={f.notes}
+              onChange={(e) => set("notes", e.target.value)}
+              placeholder="Optional special requests, serving instructions, or other details"
             />
           </Field>
           <Field label="Number of leaves">
@@ -1122,7 +1133,33 @@ function PaymentForm({ booking, close, saved }) {
   </div><div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={close}>Cancel</button><button className="btn btn-primary"><CreditCard size={17}/> Record payment</button></div></form></Modal>;
 }
 function CrudForm({ type, item, defaults = {}, close, saved, title }) {
-  const [f, setF] = useState(item || defaults);
+  const [f, setF] = useState(() => type === "packages" ? {...(item || defaults), item_ids: item?.items?.map((dish) => dish.id) || []} : item || defaults);
+  const [menuItems, setMenuItems] = useState([]);
+  const [menuLoading, setMenuLoading] = useState(type === "packages");
+  const [menuError, setMenuError] = useState("");
+  useEffect(() => {
+    if (type !== "packages") return;
+    let active = true;
+    async function loadMenu() {
+      try {
+        const dishes = [];
+        let page = 1, lastPage = 1;
+        do {
+          const {data} = await api.get("/menu-items", {params: {page, per_page: 100}});
+          dishes.push(...data.data);
+          lastPage = data.last_page;
+          page++;
+        } while (page <= lastPage);
+        if (active) setMenuItems(dishes);
+      } catch {
+        if (active) setMenuError("Menu items could not be loaded. Close and reopen this form to retry.");
+      } finally {
+        if (active) setMenuLoading(false);
+      }
+    }
+    loadMenu();
+    return () => { active = false; };
+  }, [type]);
   const [payees, setPayees] = useState([]);
   useEffect(() => {
     if (type !== "expenses") return;
@@ -1137,6 +1174,7 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
     setError("");
     setBusy(true);
     const payload = {...f};
+    if (type === "packages") delete payload.items;
     if (type === "expenses" && (payload.initial_payment === "" || payload.initial_payment == null)) delete payload.initial_payment;
     try {
       item
@@ -1176,11 +1214,23 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
             </Field>
           ))}
         </div>
+        {type === "packages" && <div className="modal-body">
+          <fieldset style={{border: "1px solid #dce3dc", borderRadius: 8, padding: 16}}>
+            <legend>Menu items ({f.item_ids.length} selected)</legend>
+            {menuLoading ? <p>Loading menu items...</p> : menuError ? <p className="error">{menuError}</p> : menuItems.length ?
+              <div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, maxHeight: 280, overflowY: "auto"}}>
+                {menuItems.map((dish) => <label key={dish.id} style={{display: "flex", alignItems: "center", gap: 8}}>
+                  <input type="checkbox" style={{width: "auto"}} checked={f.item_ids.includes(dish.id)} onChange={(e) => setF((old) => ({...old, item_ids: e.target.checked ? [...old.item_ids, dish.id] : old.item_ids.filter((id) => id !== dish.id)}))}/>
+                  <span>{dish.name} <small className="muted">{dish.category}</small></span>
+                </label>)}
+              </div> : <p>Add dishes on the <Link to="/menu-items">Menu Items page</Link>, then select them here.</p>}
+          </fieldset>
+        </div>}
         <div className="modal-foot">
           <button type="button" className="btn btn-ghost" onClick={close}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={busy}>
+          <button className="btn btn-primary" disabled={busy || (type === "packages" && (menuLoading || !!menuError))}>
             {busy ? "Saving…" : `Save ${title.toLowerCase()}`}
           </button>
         </div>
@@ -1304,6 +1354,9 @@ function Empty() {
 }
 export default function App() {
   const [auth, setAuth] = useState(!!localStorage.getItem("token"));
+  useEffect(() => {
+    if (auth) return watchSession(() => setAuth(false));
+  }, [auth]);
   return (
     <BrowserRouter>
       <Routes>
