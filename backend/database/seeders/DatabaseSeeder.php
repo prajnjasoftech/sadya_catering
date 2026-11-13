@@ -2,7 +2,7 @@
 
 namespace Database\Seeders;
 
-use App\Models\{User,Customer,MenuItem,SadyaPackage,Booking,ExpenseCategory,Expense,Payment,Supplier};
+use App\Models\{User,Customer,MenuItem,MenuCategory,SadyaPackage,Booking,ExpenseCategory,Expense,Payment,Supplier};
 // use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
@@ -20,6 +20,7 @@ class DatabaseSeeder extends Seeder
             ['name'=>'Suresh Kumar','mobile'=>'9847034567','place'=>'Guruvayur','address'=>'East Nada, Guruvayur'],
             ['name'=>'Meera Varma','mobile'=>'9847045678','place'=>'Palakkad','address'=>'Olavakkode, Palakkad'],
         ])->map(fn($x)=>Customer::create($x));
+        collect(['Main','Curry','Condiment','Side','Fruit','Payasam','Snack','Dessert','Beverage'])->each(fn($n)=>MenuCategory::create(['name'=>$n]));
         $names=['Rice'=>'Main','Parippu'=>'Curry','Sambar'=>'Curry','Avial'=>'Curry','Thoran'=>'Curry','Kootu Curry'=>'Curry','Kichadi'=>'Curry','Pachadi'=>'Curry','Mango Pickle'=>'Condiment','Pappadam'=>'Side','Banana'=>'Fruit','Ada Pradhaman'=>'Payasam','Palada Payasam'=>'Payasam','Banana Chips'=>'Snack','Sharkara Upperi'=>'Snack','Rasam'=>'Curry','Moru Curry'=>'Curry'];
         $items=collect($names)->map(fn($category,$name)=>MenuItem::create(compact('name','category')));
         $basic=SadyaPackage::create(['name'=>'Basic Sadya','price_per_leaf'=>120,'description'=>'A wholesome traditional Sadya for intimate functions.']);$basic->items()->sync($items->take(11)->pluck('id'));

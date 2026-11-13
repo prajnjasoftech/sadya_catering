@@ -12,15 +12,19 @@ class PaymentHistoryController extends Controller
     {
         $filters = $request->validate([
             'from'=>'nullable|date', 'to'=>'nullable|date|after_or_equal:from',
-            'direction'=>'nullable|in:Income,Outgoing', 'source'=>'nullable|in:Booking,Expense,Purchase',
+            'direction'=>'nullable|in:Income,Outgoing', 'source'=>'nullable|in:Booking,Refund,Expense,Purchase',
             'party'=>'nullable|string|max:255', 'method'=>'nullable|string|max:255',
             'page'=>'nullable|integer|min:1',
         ]);
         $income = DB::table('payments as p')->join('bookings as b','b.id','=','p.booking_id')->join('customers as c','c.id','=','b.customer_id')
-            ->selectRaw("p.id, 'Income' as direction, 'Booking' as source, p.payment_date, p.amount, c.name as party, p.payment_mode as method, p.reference_number, p.notes, p.payment_type as description, b.id as record_id, b.booking_number as record_reference, b.final_amount as record_total, (select coalesce(sum(amount),0) from payments where booking_id=b.id) as record_paid, c.mobile as contact, b.venue as location, b.function_date as record_date, p.created_at");
+            ->where('p.direction','in')
+            ->selectRaw("p.id, 'Income' as direction, 'Booking' as source, p.payment_date, p.amount, c.name as party, p.payment_mode as method, p.reference_number, p.notes, p.payment_type as description, b.id as record_id, b.booking_number as record_reference, b.final_amount as record_total, (select coalesce(sum(amount),0) from payments where booking_id=b.id and direction='in') as record_paid, c.mobile as contact, b.venue as location, b.function_date as record_date, p.created_at");
+        $refunds = DB::table('payments as p')->join('bookings as b','b.id','=','p.booking_id')->join('customers as c','c.id','=','b.customer_id')
+            ->where('p.direction','out')
+            ->selectRaw("p.id, 'Outgoing' as direction, 'Refund' as source, p.payment_date, p.amount, c.name as party, p.payment_mode as method, p.reference_number, p.notes, p.payment_type as description, b.id as record_id, b.booking_number as record_reference, b.final_amount as record_total, (select coalesce(sum(amount),0) from payments where booking_id=b.id and direction='out') as record_paid, c.mobile as contact, b.venue as location, b.function_date as record_date, p.created_at");
         $outgoing = DB::table('expense_payments as p')->join('expenses as e','e.id','=','p.expense_id')->leftJoin('suppliers as s','s.id','=','e.supplier_id')
             ->selectRaw("p.id, 'Outgoing' as direction, case when lower(trim(e.expense_type))='purchase' then 'Purchase' else 'Expense' end as source, p.payment_date, p.amount, coalesce(nullif(e.paid_to,''),s.name) as party, p.payment_method as method, p.reference_number, p.notes, e.description, e.id as record_id, e.invoice_number as record_reference, e.amount as record_total, (select coalesce(sum(amount),0) from expense_payments where expense_id=e.id) as record_paid, s.mobile as contact, e.expense_type as location, e.date as record_date, p.created_at");
-        $all = DB::query()->fromSub($income->unionAll($outgoing),'history');
+        $all = DB::query()->fromSub($income->unionAll($refunds)->unionAll($outgoing),'history');
         $parties = (clone $all)->whereNotNull('party')->distinct()->orderBy('party')->pluck('party');
         $methods = (clone $all)->whereNotNull('method')->distinct()->orderBy('method')->pluck('method');
         foreach (['direction','source'] as $key) if (!empty($filters[$key])) $all->where($key,$filters[$key]);

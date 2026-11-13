@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   BrowserRouter,
   Link,
@@ -44,6 +44,7 @@ import {
   MapPin,
   Phone,
   ShoppingCart,
+  Ban,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -111,7 +112,7 @@ function Login({ onLogin }) {
       <section className="login-panel">
         <form className="login-box" onSubmit={submit}>
           <span className="eyebrow">Welcome back</span>
-          <h2>Sign in to SadyaPro</h2>
+          <h2>Sign in to continue</h2>
           <p className="muted">
             Use the demo admin account to explore your workspace.
           </p>
@@ -145,7 +146,9 @@ function Shell() {
   const [open, setOpen] = useState(false),
     loc = useLocation(),
     go = useNavigate();
-  let title = nav.find((x) => loc.pathname.startsWith(x[0]))?.[1] || "SadyaPro";
+  const [businessName, setBusinessName] = useState("");
+  useEffect(() => { api.get("/settings").then(({data}) => setBusinessName(data.business_name || "")).catch(() => {}); }, []);
+  let title = nav.find((x) => loc.pathname.startsWith(x[0]))?.[1] || businessName || "Catering Suite";
   function logout() {
     sessionStorage.removeItem("sadya.logoutReason");
     endSession();
@@ -159,8 +162,8 @@ function Shell() {
             <Leaf size={22} />
           </div>
           <div>
-            <h2>SadyaPro</h2>
-            <small>Catering Suite</small>
+            <h2>{businessName || "Catering Suite"}</h2>
+            <small>Management</small>
           </div>
         </div>
         <nav className="nav">
@@ -381,7 +384,7 @@ function Dashboard() {
     </>
   );
 }
-function BookingTable({ rows, onDelete }) {
+function BookingTable({ rows, onDelete, onCancel, onEdit }) {
   return (
     <table>
       <thead>
@@ -430,8 +433,18 @@ function BookingTable({ rows, onDelete }) {
                 >
                   <Eye size={15} />
                 </Link>
-                {onDelete && (
-                <button className="icon-btn" onClick={() => onDelete(b)}>
+                {onEdit && b.status !== "Cancelled" && b.function_date > new Date().toISOString().slice(0, 10) && (
+                <button className="icon-btn" title="Edit booking" onClick={() => onEdit(b)}>
+                  <Pencil size={15} />
+                </button>
+                )}
+                {onCancel && b.status !== "Cancelled" && b.function_date >= new Date().toISOString().slice(0, 10) && (
+                <button className="icon-btn" title="Cancel booking" onClick={() => onCancel(b)}>
+                  <Ban size={15} />
+                </button>
+                )}
+                {onDelete && b.function_date > new Date().toISOString().slice(0, 10) && !Number(b.paid_amount) && (
+                <button className="icon-btn" title="Delete booking" onClick={() => onDelete(b)}>
                   <Trash2 size={15} />
                 </button>
                 )}
@@ -443,21 +456,67 @@ function BookingTable({ rows, onDelete }) {
     </table>
   );
 }
+function CancelBookingModal({ booking, close, cancelled }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const paidAmount = Number(booking.paid_amount || 0);
+  async function handleCancel(refund) {
+    setLoading(true);
+    setError("");
+    try {
+      await api.post(`/bookings/${booking.id}/cancel`, { refund });
+      cancelled();
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to cancel booking.");
+      setLoading(false);
+    }
+  }
+  return (
+    <Modal title="Cancel Booking" close={close}>
+      <div className="modal-body">
+        <p>Are you sure you want to cancel booking <strong>{booking.booking_number}</strong>?</p>
+        <p className="muted">{booking.customer?.name} · {booking.function_type} · {money(booking.final_amount)}</p>
+        {paidAmount > 0 && (
+          <div className="cancel-refund-info">
+            <p><strong>Paid amount:</strong> {money(paidAmount)}</p>
+            <p>Do you want to give a full refund?</p>
+          </div>
+        )}
+        {error && <p className="error">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button className="btn btn-ghost" onClick={close} disabled={loading}>Close</button>
+        {paidAmount > 0 ? (
+          <>
+            <button className="btn btn-ghost" onClick={() => handleCancel(false)} disabled={loading}>Cancel without refund</button>
+            <button className="btn btn-primary" onClick={() => handleCancel(true)} disabled={loading}><IndianRupee size={16} /> Cancel with refund</button>
+          </>
+        ) : (
+          <button className="btn btn-primary" onClick={() => handleCancel(false)} disabled={loading}><Ban size={16} /> Cancel booking</button>
+        )}
+      </div>
+    </Modal>
+  );
+}
 function Bookings() {
   const [rows, setRows] = useState([]),
     [modal, setModal] = useState(false),
-    [search, setSearch] = useState("");
+    [editBooking, setEditBooking] = useState(null),
+    [search, setSearch] = useState(""),
+    [page, setPage] = useState(1),
+    [lastPage, setLastPage] = useState(1),
+    [cancelBooking, setCancelBooking] = useState(null);
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const customerId = params.get("customer_id");
   const returnToCustomer = params.get("return") === "customer";
   const load = () =>
     api
-      .get("/bookings", { params: { search } })
-      .then((r) => setRows(r.data.data));
+      .get("/bookings", { params: { search, page } })
+      .then((r) => { if(page > r.data.last_page && r.data.last_page > 0) { setPage(r.data.last_page); return; } setRows(r.data.data); setLastPage(r.data.last_page); });
   useEffect(() => {
     load();
-  }, [search]);
+  }, [search, page]);
   useEffect(() => {
     if (params.get("add") === "1") setModal(true);
   }, [params]);
@@ -472,23 +531,28 @@ function Bookings() {
       <PageTop
         title="Bookings"
         sub="Plan and manage every function from one place"
-        action={() => setModal(true)}
+        action={() => { setEditBooking(null); setModal(true); }}
       />
       <div className="card table-card">
-        <Toolbar search={search} setSearch={setSearch} />
-        {rows.length ? <BookingTable rows={rows} onDelete={del} /> : <Empty />}
+        <Toolbar search={search} setSearch={(v)=>{setSearch(v);setPage(1);}} />
+        {rows.length ? <BookingTable rows={rows} onDelete={del} onCancel={setCancelBooking} onEdit={(b) => { setEditBooking(b); setModal(true); }} /> : <Empty />}
       </div>
+      {lastPage > 1 && <div className="pagination"><button className="btn btn-ghost" disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {page} of {lastPage}</span><button className="btn btn-ghost" disabled={page>=lastPage} onClick={()=>setPage(page+1)}>Next</button></div>}
       {modal && (
         <BookingForm
+          item={editBooking}
           defaultCustomerId={customerId}
-          close={() => setModal(false)}
+          close={() => { setModal(false); setEditBooking(null); }}
           saved={(booking) => {
             setModal(false);
+            setEditBooking(null);
             if (returnToCustomer && customerId) navigate(`/customers/${customerId}`);
+            else if (editBooking) load();
             else navigate(`/bookings/${booking.id}`);
           }}
         />
       )}
+      {cancelBooking && <CancelBookingModal booking={cancelBooking} close={() => setCancelBooking(null)} cancelled={() => { setCancelBooking(null); load(); }} />}
     </>
   );
 }
@@ -497,13 +561,10 @@ function BookingDetail() {
   const { id } = useParams();
   const [booking, setBooking] = useState(null);
   const [error, setError] = useState("");
+  const [editModal, setEditModal] = useState(false);
 
-  useEffect(() => {
-    api
-      .get(`/bookings/${id}`)
-      .then((response) => setBooking(response.data))
-      .catch(() => setError("This booking could not be found."));
-  }, [id]);
+  const load = () => api.get(`/bookings/${id}`).then((response) => setBooking(response.data)).catch(() => setError("This booking could not be found."));
+  useEffect(() => { load(); }, [id]);
 
   if (error)
     return (
@@ -544,6 +605,11 @@ function BookingDetail() {
           <button className="btn btn-ghost" onClick={() => window.print()}>
             <Printer size={17} /> Print booking
           </button>
+          {booking.status !== "Cancelled" && booking.function_date > new Date().toISOString().slice(0, 10) && (
+            <button className="btn btn-ghost" onClick={() => setEditModal(true)}>
+              <Pencil size={17} /> Edit booking
+            </button>
+          )}
           {Number(booking.balance_amount) > 0 && (
             <Link className="btn btn-primary" to={`/payments?add=1&booking_id=${booking.id}`}>
               <CreditCard size={17} /> Pay now
@@ -627,6 +693,7 @@ function BookingDetail() {
           {booking.notes && <section className="card"><div className="card-title"><h3>Additional information</h3></div><p className="muted" style={{whiteSpace: "pre-wrap", overflowWrap: "anywhere"}}>{booking.notes}</p></section>}
         </aside>
       </div>
+      {editModal && <BookingForm item={booking} close={() => setEditModal(false)} saved={() => { setEditModal(false); load(); }} />}
     </>
   );
 }
@@ -639,54 +706,78 @@ function PriceRow({ label, value }) {
   return <div className="price-row"><span>{label}</span><span className="money">{money(value)}</span></div>;
 }
 
-function BookingForm({ close, saved, defaultCustomerId = null }) {
+function BookingForm({ close, saved, defaultCustomerId = null, item = null }) {
   const [customers, setCustomers] = useState([]),
     [packages, setPackages] = useState([]),
+    [functionTypes, setFunctionTypes] = useState([]),
     [f, setF] = useState({
-      function_type: "Wedding",
-      function_date: new Date().toISOString().slice(0, 10),
-      serving_time: "12:30",
-      guest_count: 100,
-      price_per_leaf: 150,
-      additional_charges: 0,
-      discount: 0,
-      status: "Confirmed",
-      venue: "",
-      notes: "",
-    });
+      function_type: item?.function_type || "",
+      new_function_type: "",
+      function_date: item?.function_date || new Date().toISOString().slice(0, 10),
+      serving_time: item?.serving_time?.slice(0, 5) || "12:30",
+      guest_count: item?.guest_count || 100,
+      price_per_leaf: item?.price_per_leaf || 150,
+      additional_charges: item?.additional_charges || 0,
+      discount: item?.discount || 0,
+      status: item?.status || "Confirmed",
+      venue: item?.venue || "",
+      notes: item?.notes || "",
+      customer_id: item?.customer_id || defaultCustomerId || "",
+      sadya_package_id: item?.sadya_package_id || "",
+    }),
+    [error, setError] = useState("");
   useEffect(() => {
-    Promise.all([api.get("/customers"), api.get("/packages")]).then(
-      ([a, b]) => {
+    Promise.all([api.get("/customers"), api.get("/packages"), api.get("/function-types", {params:{per_page:100}})]).then(
+      ([a, b, c]) => {
         setCustomers(a.data.data);
         setPackages(b.data.data);
-        setF((x) => ({
-          ...x,
-          customer_id: defaultCustomerId || a.data.data[0]?.id,
-          sadya_package_id: b.data.data[0]?.id,
-          price_per_leaf: b.data.data[0]?.price_per_leaf || 150,
-        }));
+        setFunctionTypes(c.data.data);
+        if (!item) {
+          setF((x) => ({
+            ...x,
+            customer_id: x.customer_id || defaultCustomerId || a.data.data[0]?.id,
+            sadya_package_id: x.sadya_package_id || b.data.data[0]?.id,
+            price_per_leaf: x.price_per_leaf || b.data.data[0]?.price_per_leaf || 150,
+            function_type: x.function_type || c.data.data[0]?.name || "Wedding",
+          }));
+        }
       },
     );
-  }, [defaultCustomerId]);
+  }, [defaultCustomerId, item]);
   let base = f.guest_count * f.price_per_leaf,
     final = base + Number(f.additional_charges) - Number(f.discount);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   async function submit(e) {
     e.preventDefault();
-    const response = await api.post("/bookings", f);
-    saved(response.data);
+    setError("");
+    try {
+      let functionType = f.function_type;
+      if (f.function_type === "__new") {
+        const res = await api.post("/function-types", { name: f.new_function_type });
+        functionType = res.data.name;
+      }
+      const payload = { ...f, function_type: functionType };
+      delete payload.new_function_type;
+      const response = item
+        ? await api.put(`/bookings/${item.id}`, payload)
+        : await api.post("/bookings", payload);
+      saved(response.data);
+    } catch (err) {
+      setError(err.response?.data?.message || Object.values(err.response?.data?.errors || {}).flat()[0] || "Failed to save booking.");
+    }
   }
   return (
-    <Modal title="Create a new booking" close={close}>
+    <Modal title={item ? "Edit booking" : "Create a new booking"} close={close}>
       <form onSubmit={submit}>
         <div className="modal-body form-grid">
+          {error && <div className="error field full">{error}</div>}
           <Field label="Customer">
             <select
               value={f.customer_id || ""}
               onChange={(e) => set("customer_id", e.target.value)}
             >
               {customers.map((x) => (
-                <option value={x.id}>
+                <option key={x.id} value={x.id}>
                   {x.name} · {x.mobile}
                 </option>
               ))}
@@ -697,20 +788,22 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
               value={f.function_type}
               onChange={(e) => set("function_type", e.target.value)}
             >
-              {[
-                "Wedding",
-                "Reception",
-                "Housewarming",
-                "Birthday",
-                "Temple Function",
-                "Corporate Function",
-                "Family Function",
-                "Other",
-              ].map((x) => (
-                <option>{x}</option>
+              {functionTypes.map((x) => (
+                <option key={x.id} value={x.name}>{x.name}</option>
               ))}
+              <option value="__new">+ Add new function type</option>
             </select>
           </Field>
+          {f.function_type === "__new" && (
+          <Field label="New function type" full>
+            <input
+              required
+              value={f.new_function_type}
+              onChange={(e) => set("new_function_type", e.target.value)}
+              placeholder="e.g. Engagement, Anniversary"
+            />
+          </Field>
+          )}
           <Field label="Function date">
             <input
               type="date"
@@ -762,7 +855,7 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
               }}
             >
               {packages.map((x) => (
-                <option value={x.id}>
+                <option key={x.id} value={x.id}>
                   {x.name} · {money(x.price_per_leaf)}
                 </option>
               ))}
@@ -775,6 +868,13 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
               onChange={(e) => set("price_per_leaf", e.target.value)}
             />
           </Field>
+          {item ? (
+          <Field label="Status">
+            <select value={f.status} onChange={(e) => set("status", e.target.value)}>
+              {["Enquiry","Confirmed","Preparation","Completed","Cancelled"].map(s => <option key={s}>{s}</option>)}
+            </select>
+          </Field>
+          ) : (
           <Field label="Advance payment">
             <input
               type="number"
@@ -783,6 +883,7 @@ function BookingForm({ close, saved, defaultCustomerId = null }) {
               placeholder="0"
             />
           </Field>
+          )}
           <Field label="Additional charges">
             <input
               type="number"
@@ -905,16 +1006,17 @@ const defs = {
   },
 };
 function Purchases() {
-  const [rows, setRows] = useState([]), [suppliers, setSuppliers] = useState([]), [purchaseTypes, setPurchaseTypes] = useState([]), [search, setSearch] = useState(""), [editing, setEditing] = useState(null), [open, setOpen] = useState(false), [paying, setPaying] = useState(null);
-  const load = () => api.get("/expenses", {params:{expense_type:"Purchase", search}}).then((r)=>setRows(r.data.data));
+  const [rows, setRows] = useState([]), [suppliers, setSuppliers] = useState([]), [purchaseTypes, setPurchaseTypes] = useState([]), [search, setSearch] = useState(""), [editing, setEditing] = useState(null), [open, setOpen] = useState(false), [paying, setPaying] = useState(null), [page, setPage] = useState(1), [lastPage, setLastPage] = useState(1);
+  const load = () => api.get("/expenses", {params:{expense_type:"Purchase", search, page}}).then((r)=>{if(page > r.data.last_page && r.data.last_page > 0) { setPage(r.data.last_page); return; } setRows(r.data.data); setLastPage(r.data.last_page);});
   const loadMasters = () => Promise.all([api.get("/suppliers",{params:{per_page:100}}),api.get("/purchase-types",{params:{per_page:100}})]).then(([s,t])=>{setSuppliers(s.data.data);setPurchaseTypes(t.data.data);});
-  useEffect(()=>{ load(); }, [search]);
+  useEffect(()=>{ load(); }, [search, page]);
   useEffect(()=>{ loadMasters(); },[]);
   async function remove(row){if(confirm("Delete this purchase record?")){await api.delete(`/expenses/${row.id}`);load();}}
   const total=rows.reduce((sum,row)=>sum+Number(row.amount),0);
   return <><PageTop title="Purchase payments" sub="Record supplier purchases and outgoing payments" action={()=>{setEditing(null);setOpen(true);}}/>
     <div className="stats purchase-stats"><Stat label="Visible purchases" value={rows.length} I={ShoppingCart}/><Stat label="Total paid" value={money(total)} I={WalletCards}/></div>
-    <div className="card table-card"><Toolbar search={search} setSearch={setSearch}/>{rows.length?<table><thead><tr><th>Date</th><th>Purchase / supplier</th><th>Bill no.</th><th>Total</th><th>Paid</th><th>Balance</th><th/></tr></thead><tbody>{rows.map((row)=><tr key={row.id}><td>{row.date}</td><td><strong>{row.description}</strong><div className="muted">{row.supplier?.name||row.paid_to||"—"}</div></td><td>{row.invoice_number||"—"}</td><td className="money">{money(row.amount)}</td><td className="money">{money(row.paid_amount)}</td><td className="strong money">{money(row.balance_amount)}</td><td><div className="actions">{row.balance_amount>0&&<button title="Record payment" onClick={()=>setPaying(row)}><CreditCard size={15}/></button>}<button onClick={()=>{setEditing(row);setOpen(true);}}><Pencil size={15}/></button><button onClick={()=>remove(row)}><Trash2 size={15}/></button></div></td></tr>)}</tbody></table>:<Empty/>}</div>
+    <div className="card table-card"><Toolbar search={search} setSearch={(v)=>{setSearch(v);setPage(1);}}/>{rows.length?<table><thead><tr><th>Date</th><th>Purchase / supplier</th><th>Bill no.</th><th>Total</th><th>Paid</th><th>Balance</th><th/></tr></thead><tbody>{rows.map((row)=><tr key={row.id}><td>{row.date}</td><td><strong>{row.description}</strong><div className="muted">{row.supplier?.name||row.paid_to||"—"}</div></td><td>{row.invoice_number||"—"}</td><td className="money">{money(row.amount)}</td><td className="money">{money(row.paid_amount)}</td><td className="strong money">{money(row.balance_amount)}</td><td><div className="actions">{row.balance_amount>0&&<button title="Record payment" onClick={()=>setPaying(row)}><CreditCard size={15}/></button>}<button onClick={()=>{setEditing(row);setOpen(true);}}><Pencil size={15}/></button><button onClick={()=>remove(row)}><Trash2 size={15}/></button></div></td></tr>)}</tbody></table>:<Empty/>}</div>
+    {lastPage > 1 && <div className="pagination"><button className="btn btn-ghost" disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {page} of {lastPage}</span><button className="btn btn-ghost" disabled={page>=lastPage} onClick={()=>setPage(page+1)}>Next</button></div>}
     {open&&<PurchaseForm item={editing} suppliers={suppliers} purchaseTypes={purchaseTypes} close={()=>setOpen(false)} saved={()=>{setOpen(false);load();loadMasters();}}/>}
     {paying&&<ExpensePaymentForm expense={paying} close={()=>setPaying(null)} saved={()=>{setPaying(null);load();}}/>}
   </>;
@@ -927,12 +1029,12 @@ function PurchaseForm({item,suppliers,purchaseTypes,close,saved}) {
   const amount=Number(form.amount||0);
   const paidAmount=item?Number(item.paid_amount||0):Math.min(amount,Number(form.initial_payment||0));
   const balanceAmount=Math.max(0,amount-paidAmount);
-  async function submit(e){e.preventDefault();setError("");try{let supplier=suppliers.find((x)=>String(x.id)===String(form.supplier_id));if(form.supplier_id==="__new"){const response=await api.post("/suppliers",{name:form.new_supplier_name,mobile:form.new_supplier_mobile||null,address:form.new_supplier_address||null});supplier=response.data;}let purchaseName=form.purchase_type;if(form.purchase_type==="__new"){const response=await api.post("/purchase-types",{name:form.new_purchase_type});purchaseName=response.data.name;}const payload={...form,expense_type:"Purchase",description:purchaseName,amount,paid_to:supplier?.name||form.paid_to,booking_id:null,supplier_id:supplier?.id||null};["items","purchase_type","new_purchase_type","new_supplier_name","new_supplier_mobile","new_supplier_address"].forEach((key)=>delete payload[key]);item?await api.put(`/purchases/${item.id}`,payload):await api.post("/purchases",payload);saved();}catch(failure){setError(Object.values(failure.response?.data?.errors||{}).flat()[0]||"Purchase could not be saved.");}}
+  async function submit(e){e.preventDefault();setError("");try{let supplier=suppliers.find((x)=>String(x.id)===String(form.supplier_id));if(form.supplier_id==="__new"){const response=await api.post("/suppliers",{name:form.new_supplier_name,mobile:form.new_supplier_mobile||null,address:form.new_supplier_address||null});supplier=response.data;}let purchaseName=form.purchase_type;if(form.purchase_type==="__new"){const response=await api.post("/purchase-types",{name:form.new_purchase_type});purchaseName=response.data.name;}const payload={...form,expense_type:"Purchase",description:purchaseName,amount,paid_to:supplier?.name||form.paid_to,booking_id:null,supplier_id:supplier?.id||null};["items","purchase_type","new_purchase_type","new_supplier_name","new_supplier_mobile","new_supplier_address","payments","booking","supplier","category","paid_amount","balance_amount"].forEach((key)=>delete payload[key]);item?await api.put(`/purchases/${item.id}`,payload):await api.post("/purchases",payload);saved();}catch(failure){setError(Object.values(failure.response?.data?.errors||{}).flat()[0]||"Purchase could not be saved.");}}
   return <Modal title={item?"Edit purchase":"Record purchase"} close={close}><form onSubmit={submit}><div className="modal-body form-grid">
     {error&&<div className="error field full">{error}</div>}
     <Field label="Purchase date"><input required type="date" value={form.date} onChange={(e)=>set("date",e.target.value)}/></Field><Field label="Purchase item"><select required value={form.purchase_type} onChange={(e)=>set("purchase_type",e.target.value)}><option value="">Select purchase item</option>{purchaseTypes.map((type)=><option value={type.name} key={type.id}>{type.name}</option>)}<option value="__new">+ Add new purchase item</option></select></Field>
     {form.purchase_type==="__new"&&<Field label="New purchase item" full><input required value={form.new_purchase_type} onChange={(e)=>set("new_purchase_type",e.target.value)} placeholder="e.g. Banana Leaves"/></Field>}
-    <Field label="Supplier"><select required value={form.supplier_id||""} onChange={(e)=>set("supplier_id",e.target.value)}><option value="">Select supplier</option>{suppliers.map((s)=><option value={s.id} key={s.id}>{s.name}</option>)}<option value="__new">+ Add new supplier</option></select></Field><Field label="Invoice / bill number"><input value={form.invoice_number||""} onChange={(e)=>set("invoice_number",e.target.value)} placeholder="Supplier bill number"/></Field>
+    <Field label="Supplier"><select required value={String(form.supplier_id||"")} onChange={(e)=>set("supplier_id",e.target.value)}><option value="">Select supplier</option>{suppliers.map((s)=><option value={String(s.id)} key={s.id}>{s.name}</option>)}<option value="__new">+ Add new supplier</option></select></Field><Field label="Invoice / bill number"><input value={form.invoice_number||""} onChange={(e)=>set("invoice_number",e.target.value)} placeholder="Supplier bill number"/></Field>
     {form.supplier_id==="__new"&&<><Field label="New supplier name"><input required autoFocus value={form.new_supplier_name} onChange={(e)=>set("new_supplier_name",e.target.value)} placeholder="Supplier name"/></Field><Field label="Mobile"><input value={form.new_supplier_mobile} onChange={(e)=>set("new_supplier_mobile",e.target.value)} placeholder="Optional mobile"/></Field><Field label="Address" full><input value={form.new_supplier_address} onChange={(e)=>set("new_supplier_address",e.target.value)} placeholder="Optional address"/></Field></>}
     <Field label="Purchase amount" full><input required type="number" min="0.01" step="0.01" value={form.amount||""} onChange={(e)=>set("amount",e.target.value)} placeholder="Total purchase amount"/></Field>
     <Field label="Notes" full><input value={form.notes||""} onChange={(e)=>set("notes",e.target.value)} placeholder="Optional purchase notes"/></Field>
@@ -945,13 +1047,16 @@ function ExpensePaymentForm({expense,close,saved}) {
   const [form,setForm]=useState({payment_date:new Date().toLocaleDateString("en-CA"),amount:"",payment_method:"UPI",reference_number:"",notes:""}),[error,setError]=useState("");
   const set=(key,value)=>setForm((old)=>({...old,[key]:value}));
   async function submit(e){e.preventDefault();setError("");try{await api.post(`/expenses/${expense.id}/payments`,form);saved();}catch(failure){setError(failure.response?.data?.errors?.amount?.[0]||"Payment could not be recorded.");}}
-  return <Modal title="Record expense payment" close={close}><form onSubmit={submit}><div className="modal-body form-grid"><Field label="Expense"><input readOnly value={expense.item_name||expense.description}/></Field><Field label="Supplier"><input readOnly value={expense.supplier?.name||expense.paid_to||"—"}/></Field><div className="field full payment-balance"><span>Outstanding balance</span><strong>{money(expense.balance_amount)}</strong></div>{error&&<div className="error field full">{error}</div>}<Field label="Payment date"><input required type="date" value={form.payment_date} onChange={(e)=>set("payment_date",e.target.value)}/></Field><Field label="Amount"><input autoFocus required type="text" inputMode="decimal" pattern="[0-9]+([.][0-9]{1,2})?" title="Enter an amount with up to two decimal places" value={form.amount} onChange={(e)=>set("amount",e.target.value)}/></Field><Field label="Payment method"><select value={form.payment_method} onChange={(e)=>set("payment_method",e.target.value)}>{["Cash","UPI","Bank Transfer","Card","Other"].map((m)=><option key={m}>{m}</option>)}</select></Field><Field label="Reference number"><input value={form.reference_number} onChange={(e)=>set("reference_number",e.target.value)}/></Field><Field label="Notes" full><input value={form.notes} onChange={(e)=>set("notes",e.target.value)}/></Field></div><div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={close}>Cancel</button><button className="btn btn-primary"><CreditCard size={17}/> Record payment</button></div></form></Modal>;
+  return <Modal title="Record expense payment" close={close}><form onSubmit={submit}><div className="modal-body form-grid"><Field label="Expense"><input readOnly value={expense.item_name||expense.description}/></Field><Field label="Paid to"><input readOnly value={expense.supplier?.name||expense.paid_to||"—"}/></Field><div className="field full payment-balance"><span>Outstanding balance</span><strong>{money(expense.balance_amount)}</strong></div>{error&&<div className="error field full">{error}</div>}<Field label="Payment date"><input required type="date" value={form.payment_date} onChange={(e)=>set("payment_date",e.target.value)}/></Field><Field label="Amount"><input autoFocus required type="number" min="0.01" max={expense.balance_amount} step="0.01" value={form.amount} onChange={(e)=>set("amount",e.target.value)} placeholder={`Up to ${money(expense.balance_amount)}`}/></Field><Field label="Payment method"><select value={form.payment_method} onChange={(e)=>set("payment_method",e.target.value)}>{["Cash","UPI","Bank Transfer","Card","Other"].map((m)=><option key={m}>{m}</option>)}</select></Field><Field label="Reference number"><input value={form.reference_number} onChange={(e)=>set("reference_number",e.target.value)} placeholder="Optional transaction reference"/></Field><Field label="Notes" full><input value={form.notes} onChange={(e)=>set("notes",e.target.value)} placeholder="Optional notes"/></Field></div><div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={close}>Cancel</button><button className="btn btn-primary"><CreditCard size={17}/> Record payment</button></div></form></Modal>;
 }
 function CustomerDetail() {
   const { id } = useParams();
   const [customer, setCustomer] = useState(null);
   const [error, setError] = useState("");
-  useEffect(() => { api.get(`/customers/${id}`).then((response) => setCustomer(response.data)).catch(() => setError("This customer could not be found.")); }, [id]);
+  const [cancelBooking, setCancelBooking] = useState(null);
+  const [editBooking, setEditBooking] = useState(null);
+  const load = () => api.get(`/customers/${id}`).then((response) => setCustomer(response.data)).catch(() => setError("This customer could not be found."));
+  useEffect(() => { load(); }, [id]);
   if (error) return <div className="card empty"><p>{error}</p><Link className="btn btn-primary" to="/customers">Back to customers</Link></div>;
   if (!customer) return <div className="empty">Loading customer details…</div>;
   const today = new Date().toISOString().slice(0, 10);
@@ -960,7 +1065,9 @@ function CustomerDetail() {
   return <>
     <div className="detail-head"><div><Link className="back-link" to="/customers"><ArrowLeft size={16}/> Back to customers</Link><div className="detail-title"><h2>{customer.name}</h2></div><p className="eyebrow">Customer since {new Date(customer.created_at).toLocaleDateString("en-IN", {month:"long", year:"numeric"})}</p></div><Link className="btn btn-primary" to={`/bookings?add=1&customer_id=${customer.id}&return=customer`}><Plus size={17}/> New booking</Link></div>
     <div className="stats detail-stats"><Stat label="Total bookings" value={customer.bookings.length} I={CalendarDays}/><Stat label="Upcoming functions" value={upcoming.length} I={Clock3}/><Stat label="Total business value" value={money(customer.total_business_value)} I={IndianRupee}/><Stat label="Pending payments" value={money(customer.pending_payments)} I={WalletCards}/></div>
-    <div className="detail-grid"><div className="detail-main"><section className="card table-card detail-table"><div className="card-title detail-card-title"><h3>Upcoming bookings</h3><span className="muted">{upcoming.length} scheduled</span></div>{upcoming.length?<BookingTable rows={upcoming}/>:<div className="empty compact">No upcoming bookings.</div>}</section><section className="card table-card detail-table"><div className="card-title detail-card-title"><h3>Previous bookings</h3><span className="muted">Complete history</span></div>{previous.length?<BookingTable rows={previous}/>:<div className="empty compact">No previous bookings.</div>}</section></div><aside className="detail-side"><section className="card customer-card"><div className="avatar large">{customer.name.split(" ").map((part)=>part[0]).slice(0,2).join("")}</div><h3>{customer.name}</h3><p><Phone size={15}/>{customer.mobile}</p>{customer.alternate_mobile&&<p><Phone size={15}/>{customer.alternate_mobile}</p>}<p><MapPin size={15}/>{customer.place||"Place not added"}</p>{customer.email&&<p>{customer.email}</p>}{customer.address&&<p>{customer.address}</p>}</section>{customer.notes&&<section className="card"><div className="card-title"><h3>Notes</h3></div><p className="muted">{customer.notes}</p></section>}</aside></div>
+    <div className="detail-grid"><div className="detail-main"><section className="card table-card detail-table"><div className="card-title detail-card-title"><h3>Upcoming bookings</h3><span className="muted">{upcoming.length} scheduled</span></div>{upcoming.length?<BookingTable rows={upcoming} onCancel={setCancelBooking} onEdit={setEditBooking}/>:<div className="empty compact">No upcoming bookings.</div>}</section><section className="card table-card detail-table"><div className="card-title detail-card-title"><h3>Previous bookings</h3><span className="muted">Complete history</span></div>{previous.length?<BookingTable rows={previous} onCancel={setCancelBooking} onEdit={setEditBooking}/>:<div className="empty compact">No previous bookings.</div>}</section></div><aside className="detail-side"><section className="card customer-card"><div className="avatar large">{customer.name.split(" ").map((part)=>part[0]).slice(0,2).join("")}</div><h3>{customer.name}</h3><p><Phone size={15}/>{customer.mobile}</p>{customer.alternate_mobile&&<p><Phone size={15}/>{customer.alternate_mobile}</p>}<p><MapPin size={15}/>{customer.place||"Place not added"}</p>{customer.email&&<p>{customer.email}</p>}{customer.address&&<p>{customer.address}</p>}</section>{customer.notes&&<section className="card"><div className="card-title"><h3>Notes</h3></div><p className="muted">{customer.notes}</p></section>}</aside></div>
+    {cancelBooking && <CancelBookingModal booking={cancelBooking} close={() => setCancelBooking(null)} cancelled={() => { setCancelBooking(null); load(); }} />}
+    {editBooking && <BookingForm item={editBooking} close={() => setEditBooking(null)} saved={() => { setEditBooking(null); load(); }} />}
   </>;
 }
 
@@ -983,6 +1090,7 @@ function CrudPage({ type, title, singular }) {
   const [payeesError, setPayeesError] = useState("");
   const [payeesRetry, setPayeesRetry] = useState(0);
   const [listingError, setListingError] = useState("");
+  const [filterExpenseTypes, setFilterExpenseTypes] = useState([]);
   const requestId = useRef(0);
   const changeFilter = (key, value) => { setFilters(current => ({...current, [key]:value})); setPage(1); };
   const changeSort = (key) => { setSort(current => ({sort:key, direction:current.sort === key && current.direction === "asc" ? "desc" : "asc"})); setPage(1); };
@@ -990,9 +1098,9 @@ function CrudPage({ type, title, singular }) {
     const currentRequest = ++requestId.current;
     setListingError("");
     try {
-      const {data} = await api.get("/" + type, {params:{search, ...(type === "expenses" ? {...filters, ...sort, page, exclude_purchases:true} : {})}});
+      const {data} = await api.get("/" + type, {params:{search, page, ...(type === "expenses" ? {...filters, ...sort, exclude_purchases:true} : {})}});
       if(currentRequest !== requestId.current) return;
-      if(type === "expenses" && page > data.last_page) { setPage(data.last_page); return; }
+      if(page > data.last_page && data.last_page > 0) { setPage(data.last_page); return; }
       setRows(data.data); setLastPage(data.last_page);
     } catch { if(currentRequest === requestId.current) setListingError("Records could not be loaded. Please try again."); }
   };
@@ -1016,6 +1124,12 @@ function CrudPage({ type, title, singular }) {
       .finally(()=>{if(active) setPayeesLoading(false);});
     return () => { active = false; };
   }, [type, filters.expense_type, payeesRetry]);
+  useEffect(() => {
+    if (type !== "expenses") return;
+    let active = true;
+    api.get("/expense-types", {params:{per_page:100}}).then(({data}) => { if (active) setFilterExpenseTypes(data.data.filter(t => t.name !== "Purchase")); }).catch(() => {});
+    return () => { active = false; };
+  }, [type]);
   useEffect(() => {
     if (type === "payments" && params.get("add") === "1" && bookingId) {
       setEdit(null);
@@ -1044,7 +1158,7 @@ function CrudPage({ type, title, singular }) {
       <div className="card table-card">
         <Toolbar search={search} setSearch={(value)=>{setSearch(value);setPage(1);}} />
         {type === "expenses" && <div className="expense-filters">
-          <label>Type<select value={filters.expense_type} onChange={(e)=>changeFilter("expense_type",e.target.value)}><option value="">All types</option>{["Labour","Transport","Fuel","Rental","Gas","Miscellaneous","Other"].map(name=><option key={name}>{name}</option>)}</select></label>
+          <label>Type<select value={filters.expense_type} onChange={(e)=>changeFilter("expense_type",e.target.value)}><option value="">All types</option>{filterExpenseTypes.map(t=><option key={t.id} value={t.name}>{t.name}</option>)}</select></label>
           <label>Paid to<input type="search" list="expense-filter-payees" disabled={payeesLoading} placeholder={payeesLoading ? "Loading payees..." : "All payees - search names"} value={filters.paid_to} onChange={(e)=>changeFilter("paid_to",e.target.value)}/><datalist id="expense-filter-payees">{filterPayees.map(name=><option key={name} value={name}/>)}</datalist>{payeesError && <span role="alert">{payeesError} <button type="button" onClick={()=>setPayeesRetry(value=>value+1)}>Retry</button></span>}</label>
           <label>Payment status<select value={filters.payment_status} onChange={(e)=>changeFilter("payment_status",e.target.value)}><option value="">All</option><option value="pending">Pending</option><option value="paid">Fully paid</option></select></label>
           <button className="btn btn-ghost" onClick={()=>{setFilters({expense_type:"",paid_to:"",payment_status:""});setSearch("");setPage(1);}}>Clear filters</button>
@@ -1094,7 +1208,7 @@ function CrudPage({ type, title, singular }) {
           <Empty />
         )}
       </div>
-      {type === "expenses" && lastPage > 1 && <div className="expense-pagination"><button className="btn btn-ghost" disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {page} of {lastPage}</span><button className="btn btn-ghost" disabled={page>=lastPage} onClick={()=>setPage(page+1)}>Next</button></div>}
+      {lastPage > 1 && <div className="pagination"><button className="btn btn-ghost" disabled={page<=1} onClick={()=>setPage(page-1)}>Previous</button><span>Page {page} of {lastPage}</span><button className="btn btn-ghost" disabled={page>=lastPage} onClick={()=>setPage(page+1)}>Next</button></div>}
       {modal && (type === "payments" && paymentBooking ? (
         <PaymentForm
           booking={paymentBooking}
@@ -1133,7 +1247,7 @@ function PaymentForm({ booking, close, saved }) {
   </div><div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={close}>Cancel</button><button className="btn btn-primary"><CreditCard size={17}/> Record payment</button></div></form></Modal>;
 }
 function CrudForm({ type, item, defaults = {}, close, saved, title }) {
-  const [f, setF] = useState(() => type === "packages" ? {...(item || defaults), item_ids: item?.items?.map((dish) => dish.id) || []} : item || defaults);
+  const [f, setF] = useState(() => type === "packages" ? {...(item || defaults), item_ids: item?.items?.map((dish) => dish.id) || []} : type === "expenses" ? {...(item || defaults), new_expense_type: ""} : type === "menu-items" ? {...(item || defaults), new_category: ""} : item || defaults);
   const [menuItems, setMenuItems] = useState([]);
   const [menuLoading, setMenuLoading] = useState(type === "packages");
   const [menuError, setMenuError] = useState("");
@@ -1161,10 +1275,19 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
     return () => { active = false; };
   }, [type]);
   const [payees, setPayees] = useState([]);
+  const [expenseTypes, setExpenseTypes] = useState([]);
+  const [menuCategories, setMenuCategories] = useState([]);
   useEffect(() => {
     if (type !== "expenses") return;
     let active = true;
     api.get("/expenses/payees").then(({data}) => { if (active) setPayees(data); }).catch(() => { if (active) setPayees([]); });
+    api.get("/expense-types", {params:{per_page:100}}).then(({data}) => { if (active) setExpenseTypes(data.data.filter(t => t.name !== "Purchase")); }).catch(() => { if (active) setExpenseTypes([]); });
+    return () => { active = false; };
+  }, [type]);
+  useEffect(() => {
+    if (type !== "menu-items") return;
+    let active = true;
+    api.get("/menu-categories", {params:{per_page:100}}).then(({data}) => { if (active) setMenuCategories(data.data); }).catch(() => { if (active) setMenuCategories([]); });
     return () => { active = false; };
   }, [type]);
   const [error, setError] = useState("");
@@ -1175,7 +1298,22 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
     setBusy(true);
     const payload = {...f};
     if (type === "packages") delete payload.items;
-    if (type === "expenses" && (payload.initial_payment === "" || payload.initial_payment == null)) delete payload.initial_payment;
+    if (type === "menu-items") {
+      if (payload.category === "__new") {
+        const response = await api.post("/menu-categories", {name: payload.new_category});
+        payload.category = response.data.name;
+      }
+      delete payload.new_category;
+    }
+    if (type === "expenses") {
+      if (payload.initial_payment === "" || payload.initial_payment == null) delete payload.initial_payment;
+      if (payload.expense_type === "__new") {
+        const response = await api.post("/expense-types", {name: payload.new_expense_type});
+        payload.expense_type = response.data.name;
+      }
+      delete payload.new_expense_type;
+      if (item) { delete payload.items; delete payload.payments; delete payload.booking; delete payload.supplier; delete payload.category; delete payload.paid_amount; delete payload.balance_amount; }
+    }
     try {
       item
         ? await api.put(`/${type}/${item.id}`, payload)
@@ -1194,9 +1332,9 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
         <div className="modal-body form-grid">
           {error && <div className="error field full">{error}</div>}
           {type === "expenses" && <datalist id="expense-payees">{payees.map((name) => <option key={name} value={name}/>)}</datalist>}
-          {defs[type].fields.map(([k, l, t]) => (
-            <Field key={k} label={l} full={k === "description" || k === "address"}>
-              {type === "expenses" && k === "expense_type" ? <select required value={f[k] ?? "Labour"} onChange={(e) => setF({ ...f, [k]: e.target.value })}>{["Labour","Transport","Fuel","Rental","Gas","Miscellaneous","Other"].map((option)=><option key={option}>{option}</option>)}</select> : type === "expenses" && k === "payment_method" ? <select required={Number(f.initial_payment)>0} value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Choose when paying now</option>{["Cash","UPI","Bank Transfer","Card","Other"].map((option)=><option key={option}>{option}</option>)}</select> : <input
+          {defs[type].fields.map(([k, l, t]) => (<Fragment key={k}>
+            <Field label={l} full={k === "description" || k === "address"}>
+              {type === "expenses" && k === "expense_type" ? <select required value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Select expense type</option>{expenseTypes.map((t)=><option key={t.id} value={t.name}>{t.name}</option>)}<option value="__new">+ Add new type</option></select> : type === "menu-items" && k === "category" ? <select required value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Select category</option>{menuCategories.map((c)=><option key={c.id} value={c.name}>{c.name}</option>)}<option value="__new">+ Add new category</option></select> : type === "expenses" && k === "payment_method" ? <select required={Number(f.initial_payment)>0} value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Choose when paying now</option>{["Cash","UPI","Bank Transfer","Card","Other"].map((option)=><option key={option}>{option}</option>)}</select> : <input
                 required={(type === "expenses" && k === "paid_to") || [
                   "name",
                   "mobile",
@@ -1212,7 +1350,9 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
                 onChange={(e) => setF({ ...f, [k]: e.target.value })}
               />}
             </Field>
-          ))}
+            {type === "expenses" && k === "expense_type" && f.expense_type === "__new" && <Field label="New expense type" full><input required autoFocus placeholder="e.g. Maintenance" value={f.new_expense_type || ""} onChange={(e) => setF({...f, new_expense_type: e.target.value})}/></Field>}
+            {type === "menu-items" && k === "category" && f.category === "__new" && <Field label="New category" full><input required autoFocus placeholder="e.g. Desserts" value={f.new_category || ""} onChange={(e) => setF({...f, new_category: e.target.value})}/></Field>}
+          </Fragment>))}
         </div>
         {type === "packages" && <div className="modal-body">
           <fieldset style={{border: "1px solid #dce3dc", borderRadius: 8, padding: 16}}>
@@ -1240,37 +1380,31 @@ function CrudForm({ type, item, defaults = {}, close, saved, title }) {
 }
 function Reports() { return <CashFlowReports Stat={Stat}/>; }
 function SettingsPage() {
+  const [settings, setSettings] = useState({business_name:"",phone:"",email:"",address:""});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => { api.get("/settings").then(({data}) => setSettings({business_name:data.business_name||"",phone:data.phone||"",email:data.email||"",address:data.address||""})).finally(() => setLoading(false)); }, []);
+  const set = (key, value) => setSettings(s => ({...s, [key]: value}));
+  async function save(e) { e.preventDefault(); setSaving(true); setMessage(""); try { await api.post("/settings", settings); setMessage("Settings saved successfully!"); } catch { setMessage("Failed to save settings."); } finally { setSaving(false); } }
+  if (loading) return <div className="empty">Loading settings...</div>;
   return (
     <>
-      <PageTop
-        title="Settings"
-        sub="Business profile and account preferences"
-      />
-      <div className="card" style={{ maxWidth: 700 }}>
-        <div className="card-title">
-          <h3>Business profile</h3>
+      <PageTop title="Settings" sub="Business profile and account preferences" />
+      <form onSubmit={save}>
+        <div className="card" style={{ maxWidth: 700 }}>
+          <div className="card-title"><h3>Business profile</h3></div>
+          {message && <div className={message.includes("success") ? "success" : "error"} style={{marginBottom:16}}>{message}</div>}
+          <div className="form-grid">
+            <Field label="Business name"><input value={settings.business_name} onChange={(e)=>set("business_name",e.target.value)} /></Field>
+            <Field label="Phone"><input value={settings.phone} onChange={(e)=>set("phone",e.target.value)} /></Field>
+            <Field label="Email"><input type="email" value={settings.email} onChange={(e)=>set("email",e.target.value)} /></Field>
+            <Field label="Currency"><input defaultValue="Indian Rupee (₹)" disabled /></Field>
+            <Field label="Address" full><textarea value={settings.address} onChange={(e)=>set("address",e.target.value)} /></Field>
+          </div>
+          <button className="btn btn-primary" style={{ marginTop: 20 }} disabled={saving}>{saving ? "Saving..." : "Save settings"}</button>
         </div>
-        <div className="form-grid">
-          <Field label="Business name">
-            <input defaultValue="SadyaPro Catering" />
-          </Field>
-          <Field label="Phone">
-            <input defaultValue="+91 98470 00000" />
-          </Field>
-          <Field label="Email">
-            <input defaultValue="hello@sadyapro.in" />
-          </Field>
-          <Field label="Currency">
-            <input defaultValue="Indian Rupee (₹)" disabled />
-          </Field>
-          <Field label="Address" full>
-            <textarea defaultValue="Thrissur, Kerala" />
-          </Field>
-        </div>
-        <button className="btn btn-primary" style={{ marginTop: 20 }}>
-          Save settings
-        </button>
-      </div>
+      </form>
     </>
   );
 }

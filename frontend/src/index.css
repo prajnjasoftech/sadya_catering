@@ -585,7 +585,11 @@ td {
 .expense-filters label { display:flex; flex-direction:column; gap:6px; font-size:13px; flex:1; min-width:160px; }
 .expense-filters input, .expense-filters select { width:100%; padding:10px; border:1px solid #dce3df; border-radius:8px; background:white; color:inherit; }
 .sort-heading { border:0; background:transparent; color:inherit; font:inherit; cursor:pointer; padding:0; }
-.expense-pagination { display:flex; justify-content:flex-end; align-items:center; gap:16px; margin:16px 0; }
+.pagination { display:flex; justify-content:flex-end; align-items:center; gap:16px; margin:16px 0; }
+
+.cancel-refund-info { background:#fef3cd; border:1px solid #ffc107; border-radius:8px; padding:16px; margin-top:16px; }
+.cancel-refund-info p { margin:0 0 8px; }
+.cancel-refund-info p:last-child { margin-bottom:0; font-weight:500; }
 
 .payment-history-stats { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .payment-history-filters { padding-top:20px; }
